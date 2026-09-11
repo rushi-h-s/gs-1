@@ -14,6 +14,9 @@ export default function ClientDetailPage() {
   const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7))
   const [gstr2bFile, setGstr2bFile] = useState<File | null>(null)
   const [invoiceFiles, setInvoiceFiles] = useState<FileList | null>(null)
+  const [bankFiles, setBankFiles] = useState<FileList | null>(null)
+  const [bankUploading, setBankUploading] = useState(false)
+  const [bankSummary, setBankSummary] = useState('')
   const [status, setStatus] = useState('')
   const [statusType, setStatusType] = useState<'info' | 'success' | 'error'>('info')
   const [reconciling, setReconciling] = useState(false)
@@ -55,12 +58,41 @@ export default function ClientDetailPage() {
     setGstr2bReady(null)
     await startUpload(Array.from(invoiceFiles))
 
+    // Refresh unconfirmed count — low-confidence entries may have been added
+    fetch(`/api/clients/${id}`).then(r => r.json()).then((d: { count?: number }) => {
+      if (typeof d.count === 'number') setUnconfirmedCount(d.count)
+    }).catch(() => {})
+
     // Check if GSTR-2B is already uploaded for this period
     const check = await fetch(`/api/gstr2b/check?client_id=${encodeURIComponent(id)}&period=${period}`)
     if (check.ok) {
       const { exists } = await check.json()
       setGstr2bReady(exists)
     }
+  }
+
+  async function uploadBankStatements() {
+    if (!bankFiles?.length) return
+    setBankUploading(true)
+    setBankSummary('')
+    const fd = new FormData()
+    Array.from(bankFiles).forEach(f => fd.append('files', f))
+    fd.append('client_id', id)
+    fd.append('period', period)
+    const res = await fetch('/api/bank-statements/upload', { method: 'POST', body: fd })
+    const data = await res.json() as { filename: string; skipped?: boolean; error?: string; txn_count?: number; quarantine?: boolean }[]
+    setBankUploading(false)
+    if (!res.ok) { setBankSummary('Upload failed'); return }
+    const ok = data.filter(r => !r.error && !r.skipped).length
+    const dup = data.filter(r => r.skipped).length
+    const err = data.filter(r => r.error).length
+    const flagged = data.filter(r => r.quarantine).length
+    setBankSummary([
+      ok && `${ok} processed`,
+      flagged && `${flagged} flagged for balance mismatch`,
+      dup && `${dup} duplicate`,
+      err && `${err} failed`,
+    ].filter(Boolean).join(' · '))
   }
 
   async function runReconciliation() {
@@ -74,8 +106,10 @@ export default function ClientDetailPage() {
     const data = await res.json()
     setReconciling(false)
     if (res.ok) {
+      const skipped = data.unconfirmed_skipped ?? 0
       setMsg(`Done — ${data.total} entries processed`, 'success')
-      router.push(`/clients/${id}/reconciliation?period=${period}`)
+      const dest = `/clients/${id}/reconciliation?period=${period}${skipped > 0 ? `&unconfirmed=${skipped}` : ''}`
+      router.push(dest)
     } else {
       setMsg(`Error: ${data.error}`, 'error')
     }
@@ -155,7 +189,7 @@ export default function ClientDetailPage() {
       </div>
 
       {/* Upload cards */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-3 gap-4 mb-4">
         {/* GSTR-2B */}
         <div className="bg-white rounded-xl border p-5" style={{ borderColor: 'var(--border)' }}>
           <div className="flex items-center gap-2 mb-1">
@@ -229,10 +263,45 @@ export default function ClientDetailPage() {
             <p className="mt-2 text-xs" style={{ color: 'var(--text-3)' }}>
               {[
                 counts.done && `${counts.done} extracted`,
+                counts.low_confidence && `${counts.low_confidence} needs review`,
                 counts.duplicate && `${counts.duplicate} duplicate`,
                 counts.error && `${counts.error} failed`,
               ].filter(Boolean).join(' · ')}
             </p>
+          )}
+        </div>
+
+        {/* Bank Statements */}
+        <div className="bg-white rounded-xl border p-5" style={{ borderColor: 'var(--border)' }}>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-6 h-6 rounded flex items-center justify-center" style={{ background: '#FEF3C7' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20"/>
+              </svg>
+            </div>
+            <h2 className="font-semibold text-sm font-display" style={{ color: 'var(--text-1)' }}>Bank Statements</h2>
+          </div>
+          <p className="text-xs mb-4" style={{ color: 'var(--text-3)' }}>PDF or CSV — transactions extracted automatically</p>
+
+          <label className="block w-full border-2 border-dashed rounded-lg px-3 py-3 text-center cursor-pointer text-xs transition-colors mb-3 hover:border-amber-300"
+            style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
+            <input type="file" accept=".pdf,.csv" multiple onChange={e => setBankFiles(e.target.files)} className="hidden" />
+            {bankFiles?.length ? (
+              <span style={{ color: 'var(--text-1)' }} className="font-medium">{bankFiles.length} file{bankFiles.length !== 1 ? 's' : ''} selected</span>
+            ) : (
+              <>Choose files</>
+            )}
+          </label>
+          <button
+            onClick={uploadBankStatements}
+            disabled={!bankFiles?.length || bankUploading}
+            className="w-full py-2 rounded-lg text-sm font-semibold font-display transition-colors"
+            style={{ background: bankFiles?.length && !bankUploading ? '#D97706' : 'var(--bg)', color: bankFiles?.length && !bankUploading ? 'white' : 'var(--text-3)', cursor: bankFiles?.length && !bankUploading ? 'pointer' : 'default' }}
+          >
+            {bankUploading ? 'Extracting…' : 'Extract Statements'}
+          </button>
+          {bankSummary && (
+            <p className="mt-2 text-xs" style={{ color: 'var(--text-3)' }}>{bankSummary}</p>
           )}
         </div>
       </div>
@@ -248,10 +317,32 @@ export default function ClientDetailPage() {
         </div>
       )}
 
-      {/* Failed files notice */}
-      {!uploading && (counts.error ?? 0) > 0 && (
-        <div className="rounded-xl border px-4 py-3 mb-4" style={{ background: '#FEF2F2', borderColor: '#FECACA' }}>
-          <span className="text-sm" style={{ color: '#DC2626' }}>{counts.error} file{counts.error !== 1 ? 's' : ''} failed — re-select and upload them to retry</span>
+      {/* Per-file result breakdown after upload */}
+      {!uploading && batchFiles.some(f => f.status === 'error' || f.status === 'low_confidence') && (
+        <div className="rounded-xl border px-4 py-3 mb-4 space-y-3" style={{ background: '#FEF2F2', borderColor: '#FECACA' }}>
+          {batchFiles.filter(f => f.status === 'error').length > 0 && (
+            <div>
+              <p className="text-xs font-semibold mb-1" style={{ color: '#DC2626' }}>Failed extraction — re-select to retry</p>
+              <ul className="space-y-0.5">
+                {batchFiles.filter(f => f.status === 'error').map(f => (
+                  <li key={f.file.name} className="text-xs font-mono" style={{ color: '#991B1B' }}>
+                    {f.file.name}
+                    {f.error && <span className="ml-2 font-sans" style={{ color: '#DC2626' }}>— {f.error}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {batchFiles.filter(f => f.status === 'low_confidence').length > 0 && (
+            <div>
+              <p className="text-xs font-semibold mb-1" style={{ color: '#D97706' }}>Low confidence — confirm extracted fields</p>
+              <ul className="space-y-0.5">
+                {batchFiles.filter(f => f.status === 'low_confidence').map(f => (
+                  <li key={f.file.name} className="text-xs font-mono" style={{ color: '#92400E' }}>{f.file.name}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -293,6 +384,14 @@ export default function ClientDetailPage() {
           )}
           {reconciling ? 'Running…' : 'Run Reconciliation'}
         </button>
+
+        <Link
+          href={`/clients/${id}/data?period=${period}`}
+          className="text-sm font-medium flex items-center gap-1.5 transition-colors hover:opacity-70 font-display"
+          style={{ color: 'var(--text-2)' }}
+        >
+          Check Extracted Data
+        </Link>
 
         <Link
           href={`/clients/${id}/reconciliation?period=${period}`}

@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 
-type FileStatus = "pending" | "uploading" | "done" | "duplicate" | "error";
+type FileStatus = "pending" | "uploading" | "done" | "duplicate" | "low_confidence" | "error";
 
 export interface FileState {
   file: File;
@@ -55,6 +55,8 @@ export function useInvoiceBatchUpload(clientId: string, period: string) {
             } else if (result?.error) {
               status = "error";
               error = result.error;
+            } else if (result?.confidence != null && result.confidence < 0.6) {
+              status = "low_confidence";
             }
 
             setFiles((prev) =>

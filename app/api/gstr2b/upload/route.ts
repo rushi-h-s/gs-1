@@ -22,7 +22,7 @@ export async function POST(req: Request) {
 
   // Remove only the raw 2B entries — match_results are rebuilt on next reconcile run.
   // Deleting match_results here would destroy all user review decisions.
-  await db.from('gstr2b_entries').delete().eq('client_id', clientId).eq('period', period)
+  await db.from('gstr2b_entries').delete().eq('org_id', orgId).eq('client_id', clientId).eq('period', period)
 
   let prInserted = 0
   let entries
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
     // If the JSON also has a purchase_register array, import it directly
     const prEntries = parsePurchaseRegisterJson(json)
     if (prEntries.length > 0) {
-      await db.from('purchase_register_entries').delete().eq('client_id', clientId).eq('period', period)
+      await db.from('purchase_register_entries').delete().eq('org_id', orgId).eq('client_id', clientId).eq('period', period)
       const prRows = prEntries.map(e => ({
         org_id: orgId, client_id: clientId, period,
         supplier_gstin: e.supplier_gstin,

@@ -1,20 +1,34 @@
 @import "tailwindcss";
 
+/* Filewise — design-system tokens. Warm minimal: paper bg, ink text, red accent. */
 :root {
-  --navy: #0B1D3A;
-  --navy-hover: #0F2A52;
-  --navy-border: #1A3A6B;
-  --bg: #F0F4F8;
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-text: #201e1d;
+  --color-accent: #ec3013;
+  --color-accent-2: #e15b47;
+  --color-divider: #d7d3d3;
+
+  /* Legacy names reused across pages — remapped onto the Filewise palette
+     so existing screens pick up the new look without rewrites. */
+  --navy: #201e1d;
+  --navy-hover: #2d2b2b;
+  --navy-border: #d7d3d3;
+  --bg: #f3f2f2;
   --surface: #FFFFFF;
-  --border: #E2E8F0;
-  --border-strong: #CBD5E1;
-  --primary: #1B4FD8;
-  --primary-hover: #1640B0;
+  --border: #e2e0e0;
+  --border-strong: #d7d3d3;
+  --primary: #ec3013;
+  --primary-hover: #c4270f;
   --emerald: #059669;
   --emerald-light: #D1FAE5;
-  --text-1: #0F172A;
-  --text-2: #475569;
-  --text-3: #94A3B8;
+  --text-1: #201e1d;
+  --text-2: #605d5d;
+  --text-3: #9b9797;
+
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
 }
 
 @theme inline {
@@ -28,7 +42,11 @@ body {
   font-family: var(--font-body), system-ui, sans-serif;
   background: var(--bg);
   color: var(--text-1);
+  font-size: 15px;
+  line-height: 1.55;
 }
+
+h1, h2, h3, h4 { font-family: var(--font-display), system-ui, sans-serif; font-weight: 800; }
 
 .font-display {
   font-family: var(--font-display), system-ui, sans-serif;
@@ -37,3 +55,71 @@ body {
 .font-mono {
   font-family: var(--font-mono), monospace;
 }
+
+/* — Filewise components (plain CSS on plain HTML) — */
+
+.hr {
+  height: 2px; border: 0; margin: 16px 0;
+  background: var(--color-divider);
+}
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; text-decoration: none;
+  font-family: var(--font-display), system-ui, sans-serif; font-weight: 800;
+  font-size: 14px; line-height: 1.2; color: var(--color-text);
+  background: transparent; border: 1px solid transparent;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--color-accent); color: var(--color-bg); }
+.btn-primary:hover { background: #dd2b0f; }
+.btn-primary:active { background: #ae1800; }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover { background: rgba(32, 30, 29, 0.07); }
+.btn-ghost { color: var(--color-accent); padding-inline: 4px; }
+.btn-ghost:hover { background: rgba(236, 48, 19, 0.10); }
+
+.field > label {
+  display: block; font-size: 12px; margin-bottom: 5px;
+  color: rgba(32, 30, 29, 0.70);
+}
+.input {
+  width: 100%; min-height: 36px; padding: 6px 10px; font: inherit;
+  font-size: 14px; color: var(--color-text); caret-color: var(--color-accent);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+}
+.input:hover { border-color: rgba(32, 30, 29, 0.45); }
+
+.card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-radius: var(--radius-md); background: var(--color-surface);
+}
+.card-kicker { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent); }
+.card-title {
+  font-family: var(--font-display), system-ui, sans-serif; font-weight: 800;
+  font-size: 17px; line-height: 1.2;
+}
+.card-body { margin: 0; font-size: 13px; opacity: 0.8; flex: 1; }
+.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: rgba(32, 30, 29, 0.5); }
+
+.tag {
+  display: inline-flex; align-items: center; font-size: 11px;
+  letter-spacing: 0.02em; padding: 3px 10px;
+  border-radius: var(--radius-md);
+}
+.tag-accent { background: #ffe0d9; color: #7c1405; }
+.tag-accent-2 { background: #ffe0da; color: #71261b; }
+.tag-neutral { background: #f8f4f4; color: #444141; }
+.tag-outline { border: 1px solid var(--color-accent); color: var(--color-accent); }
+
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th {
+  text-align: left; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: rgba(32, 30, 29, 0.6);
+  padding: 8px; border-bottom: 2px solid var(--color-divider);
+}
+.table td { padding: 8px; border-bottom: 1px solid var(--color-divider); }
+.table tbody tr:hover { background: rgba(32, 30, 29, 0.04); }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getDbAndOrg } from '@/lib/db'
+import { validateGstin } from '@/lib/normalize'
 
 export async function GET() {
   const { db, orgId } = await getDbAndOrg()
@@ -16,6 +17,7 @@ export async function POST(req: Request) {
 
   const { name, gstin } = await req.json()
   if (!name || !gstin) return NextResponse.json({ error: 'name and gstin required' }, { status: 400 })
+  if (!validateGstin(gstin)) return NextResponse.json({ error: 'Invalid GSTIN — must be 15 characters in the standard format' }, { status: 400 })
 
   const { data, error } = await db.from('clients').insert({ org_id: orgId, name, gstin }).select().single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

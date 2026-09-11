@@ -116,6 +116,19 @@ export async function repairMatch(id: string, newTwoBId: string) {
   revalidatePath('/clients/[id]/reconciliation', 'page')
 }
 
+export async function lockPeriod(clientId: string, period: string) {
+  const { db, orgId } = await getDbAndOrg()
+  if (!orgId) throw new Error('No org')
+  const { data: { user } } = await db.auth.getUser()
+  await db.from('locked_periods').upsert({
+    org_id: orgId,
+    client_id: clientId,
+    period,
+    locked_by: user?.id ?? null,
+  }, { onConflict: 'org_id,client_id,period' })
+  revalidatePath('/clients/[id]/reconciliation', 'page')
+}
+
 export async function acceptAllMatched(runId: string) {
   const { db, orgId } = await getDbAndOrg()
   if (!orgId) throw new Error('No org')

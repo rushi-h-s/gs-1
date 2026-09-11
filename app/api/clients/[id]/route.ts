@@ -17,13 +17,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const { db, orgId } = await getDbAndOrg()
     if (!orgId) return NextResponse.json({ error: 'No org' }, { status: 403 })
 
-    const count = await db.from('purchase_register_entries')
+    const { count } = await db.from('purchase_register_entries')
       .select('id', { count: 'exact', head: true })
       .eq('client_id', id)
+      .eq('org_id', orgId)
       .eq('needs_confirmation', true)
       .is('confirmed_at', null)
 
-    return NextResponse.json({ count })
+    return NextResponse.json({ count: count ?? 0 })
   } catch (e) {
     return NextResponse.json({ error: 'Failed to count' }, { status: 500 })
   }

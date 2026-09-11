@@ -147,6 +147,7 @@ export default function BreakReviewCard({
           <div className="space-y-2.5">
             <FieldRow label="Supplier" value={String(pr?.supplier_gstin ?? '—')} mono />
             <FieldRow label="Invoice No" value={String(pr?.norm_inv_no ?? '—')} mono />
+            <FieldRow label="Date" value={pr?.inv_date ? String(pr.inv_date) : '—'} mono />
             <FieldRow label="Taxable" value={Number(pr?.taxable_value ?? 0).toLocaleString('en-IN')} right />
             <FieldRow label="CGST" value={Number(pr?.cgst ?? 0).toLocaleString('en-IN')} right />
             <FieldRow label="SGST" value={Number(pr?.sgst ?? 0).toLocaleString('en-IN')} right />
@@ -163,6 +164,7 @@ export default function BreakReviewCard({
             <div className="space-y-2.5">
               <FieldRow label="Supplier" value={String(tb.supplier_gstin ?? '—')} mono />
               <FieldRow label="Invoice No" value={String(tb.norm_inv_no ?? '—')} mono />
+              <FieldRow label="Date" value={tb.inv_date ? String(tb.inv_date) : '—'} mono />
               <FieldRow label="Taxable" value={Number(tb.taxable_value ?? 0).toLocaleString('en-IN')} right />
               <FieldRow label="CGST" value={Number(tb.cgst ?? 0).toLocaleString('en-IN')} right />
               <FieldRow label="SGST" value={Number(tb.sgst ?? 0).toLocaleString('en-IN')} right />

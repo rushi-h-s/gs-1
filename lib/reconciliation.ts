@@ -27,6 +27,20 @@ export interface MatchResult {
 }
 
 const AMOUNT_TOLERANCE = 0.05 // 5%
+const MAX_INV_NO_EDIT_DISTANCE = 2 // OCR/typo tolerance for the fuzzy fallback pass
+
+function levenshtein(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+    }
+  }
+  return dp[a.length][b.length]
+}
 
 function amountDiff(a: number, b: number): number {
   if (a === 0 && b === 0) return 0
@@ -116,6 +130,42 @@ export function reconcile(prEntries: Entry[], twoBEntries: Entry[]): MatchResult
       tax_variance,
       itc_at_risk,
       evidence: buildEvidence(pr, best, bestResult.status),
+    })
+  }
+
+  // Fuzzy fallback: same GSTIN, invoice number differs by a couple of characters
+  // (OCR misread or a typo in either source) and the taxable value is in the same ballpark.
+  // Exact-key matching above would otherwise split these into a BOOKS_ONLY + TWOB_ONLY pair.
+  for (const pr of prEntries) {
+    if (usedPR.has(pr.id) || !pr.norm_supplier_gstin || !pr.norm_inv_no) continue
+
+    let best: Entry | null = null
+    let bestDist = Infinity
+    for (const tb of twoBEntries) {
+      if (usedTwoB.has(tb.id) || tb.norm_supplier_gstin !== pr.norm_supplier_gstin || !tb.norm_inv_no) continue
+      if (amountDiff(pr.taxable_value, tb.taxable_value) > 0.2) continue
+      const dist = levenshtein(pr.norm_inv_no, tb.norm_inv_no)
+      if (dist <= MAX_INV_NO_EDIT_DISTANCE && dist < bestDist) { best = tb; bestDist = dist }
+    }
+    if (!best) continue
+
+    const { taxable_variance, tax_variance } = computeVariance(pr, best)
+    const amounts = matchAmounts(pr, best)
+    const totalTax = (best.cgst ?? 0) + (best.sgst ?? 0) + (best.igst ?? 0)
+    const itc_at_risk = amounts.status === 'MATCHED' ? 0 : Math.abs(tax_variance) || totalTax
+
+    usedPR.add(pr.id)
+    usedTwoB.add(best.id)
+    results.push({
+      pr_entry_id: pr.id,
+      gstr2b_entry_id: best.id,
+      status: 'PROBABLE',
+      confidence: 0.6,
+      mismatched_fields: [...amounts.mismatched, 'inv_no'],
+      taxable_variance,
+      tax_variance,
+      itc_at_risk,
+      evidence: { ...buildEvidence(pr, best, 'PROBABLE'), fuzzy_inv_no_match: true, edit_distance: bestDist },
     })
   }
 

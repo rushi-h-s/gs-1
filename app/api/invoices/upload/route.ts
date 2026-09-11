@@ -40,8 +40,11 @@ interface ExtractionResult {
 
 function parseAmount(s: string): number { return parseFloat(s.replace(/,/g, '')) }
 
-function parseText(text: string): ExtractionResult {
-  const gstinMatch = text.match(/[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}/g)
+function parseText(text: string, buyerGstin?: string): ExtractionResult {
+  const gstinMatches = text.match(/[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}/g)
+  // A purchase invoice's supplier can never be the client itself — drop the buyer's own GSTIN
+  // from the candidates (it often appears in a "Billed To" block ahead of the supplier's).
+  const gstinMatch = gstinMatches?.filter(g => g !== buyerGstin)
   const invMatch = text.match(/(?:invoice\s*(?:no|number|#)\s*[:\-]?\s*)([A-Z0-9\/\-]+)/i)
 
   const namedDateMatch = text.match(/(\d{1,2}[-\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-\s]\d{4})/i)
@@ -83,9 +86,10 @@ function isImage(filename: string): boolean {
   return /\.(jpg|jpeg|png|tiff)$/i.test(filename)
 }
 
-const EXTRACT_PROMPT = `You are a GST invoice parser. Extract the following fields from this Indian GST invoice and return ONLY a JSON object (no markdown, no explanation):
+function buildExtractPrompt(buyerGstin?: string): string {
+  return `You are a GST invoice parser. Extract the following fields from this Indian GST invoice and return ONLY a JSON object (no markdown, no explanation):
 {
-  "gstin": "supplier GSTIN (15-char)",
+  "gstin": "SUPPLIER'S/SELLER'S GSTIN (15-char) — the party issuing the invoice, NOT the buyer",
   "invoice_number": "invoice number",
   "invoice_date": "date in YYYY-MM-DD format",
   "taxable_value": number,
@@ -93,7 +97,8 @@ const EXTRACT_PROMPT = `You are a GST invoice parser. Extract the following fiel
   "sgst": number,
   "igst": number
 }
-Use null for any field not found.`
+${buyerGstin ? `The buyer/recipient on this invoice is GSTIN ${buyerGstin} — do NOT return this value as "gstin", it must be the supplier's GSTIN.\n` : ''}Use null for any field not found.`
+}
 
 // OpenAI-compatible call — works for both OpenRouter and Ollama
 async function callOpenAICompat(
@@ -118,11 +123,13 @@ async function callOpenAICompat(
   return data.choices?.[0]?.message?.content ?? ''
 }
 
-function parseJsonResult(raw: string): ExtractionResult {
+function parseJsonResult(raw: string, buyerGstin?: string): ExtractionResult {
   try {
     const json = JSON.parse(raw.replace(/```json|```/g, '').trim()) as Record<string, unknown>
+    const gstin = json.gstin ? String(json.gstin) : undefined
     return {
-      gstin: json.gstin ? String(json.gstin) : undefined,
+      // Guard against the model still returning the buyer's own GSTIN
+      gstin: gstin && gstin !== buyerGstin ? gstin : undefined,
       invoice_number: json.invoice_number ? String(json.invoice_number) : undefined,
       invoice_date: json.invoice_date ? String(json.invoice_date) : undefined,
       taxable_value: json.taxable_value != null ? Number(json.taxable_value) : undefined,
@@ -136,7 +143,7 @@ function parseJsonResult(raw: string): ExtractionResult {
 }
 
 // Provider cascade: OpenRouter → Ollama → Gemini
-async function extractWithAI(prompt: string, imageBase64?: string, imageMime?: string): Promise<ExtractionResult> {
+async function extractWithAI(prompt: string, buyerGstin?: string, imageBase64?: string, imageMime?: string): Promise<ExtractionResult> {
   // 1. OpenRouter
   const orKey = process.env.OPENROUTER_API_KEY
   const orModel = imageBase64
@@ -145,7 +152,8 @@ async function extractWithAI(prompt: string, imageBase64?: string, imageMime?: s
   if (orKey) {
     try {
       const raw = await callOpenAICompat('https://openrouter.ai/api/v1', orKey, orModel, prompt, imageBase64, imageMime)
-      const result = parseJsonResult(raw)
+      console.log('[openrouter] raw:', raw?.slice(0, 300))
+      const result = parseJsonResult(raw, buyerGstin)
       if (result.gstin || result.invoice_number) return result
     } catch (e) { console.error('[openrouter] error:', e) }
   }
@@ -157,7 +165,7 @@ async function extractWithAI(prompt: string, imageBase64?: string, imageMime?: s
     : (process.env.OLLAMA_MODEL ?? 'llama3')
   try {
     const raw = await callOpenAICompat(ollamaBase, 'ollama', ollamaModel, prompt, imageBase64, imageMime)
-    const result = parseJsonResult(raw)
+    const result = parseJsonResult(raw, buyerGstin)
     if (result.gstin || result.invoice_number) return result
   } catch (e) { console.error('[ollama] error:', e) }
 
@@ -174,7 +182,7 @@ async function extractWithAI(prompt: string, imageBase64?: string, imageMime?: s
           { inlineData: { mimeType: imageMime, data: imageBase64 } },
         ]}],
       })
-      return parseJsonResult(result.text ?? '')
+      return parseJsonResult(result.text ?? '', buyerGstin)
     } catch (e) { console.error('[gemini] error:', e) }
   }
 
@@ -182,15 +190,16 @@ async function extractWithAI(prompt: string, imageBase64?: string, imageMime?: s
 }
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
+  // Try pdf-parse first
   try {
     // ponytail: import lib directly to avoid pdf-parse loading its own test file on Windows
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { text } = await require('pdf-parse/lib/pdf-parse')(buffer)
-    return text as string
-  } catch (e) {
-    console.error('[extractPdfText] error:', e)
-    return ''
-  }
+    if (text && text.trim().length > 0) return text as string
+  } catch {}
+
+  console.error('[extractPdfText] failed, falling back to vision model')
+  return ''
 }
 
 const TEXT_THRESHOLD = 80
@@ -204,27 +213,28 @@ interface ExtractedFile {
   extractError?: string
 }
 
-async function extractFile(file: File): Promise<ExtractedFile> {
+async function extractFile(file: File, buyerGstin?: string): Promise<ExtractedFile> {
   const buffer = Buffer.from(await file.arrayBuffer())
   const fileHash = crypto.createHash('sha256').update(buffer).digest('hex')
   let parsed: ExtractionResult = {}
+  const prompt = buildExtractPrompt(buyerGstin)
 
   try {
     if (file.name.toLowerCase().endsWith('.pdf')) {
       const rawText = await extractPdfText(buffer)
       if (rawText.length >= TEXT_THRESHOLD) {
         // Text PDF: LLM extracts structured JSON directly (better than regex)
-        parsed = await extractWithAI(`${EXTRACT_PROMPT}\n\nInvoice text:\n${rawText.slice(0, 4000)}`)
+        parsed = await extractWithAI(`${prompt}\n\nInvoice text:\n${rawText.slice(0, 4000)}`, buyerGstin)
         // Fall back to regex if LLM returned nothing useful
-        if (!parsed.gstin && !parsed.invoice_number) parsed = parseText(rawText)
+        if (!parsed.gstin && !parsed.invoice_number) parsed = parseText(rawText, buyerGstin)
       } else {
         // Scanned/bad PDF: vision model
-        parsed = await extractWithAI(EXTRACT_PROMPT, buffer.toString('base64'), 'application/pdf')
+        parsed = await extractWithAI(prompt, buyerGstin, buffer.toString('base64'), 'application/pdf')
       }
     } else if (isImage(file.name)) {
       const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpeg'
       const mime = ext === 'png' ? 'image/png' : ext === 'tiff' ? 'image/tiff' : 'image/jpeg'
-      parsed = await extractWithAI(EXTRACT_PROMPT, buffer.toString('base64'), mime)
+      parsed = await extractWithAI(prompt, buyerGstin, buffer.toString('base64'), mime)
     }
   } catch (e) {
     return { filename: file.name, fileHash, parsed, extractError: (e as Error).message }
@@ -246,10 +256,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'files, client_id, period required' }, { status: 400 })
   }
 
+  // The buyer's own GSTIN — needed to filter it out of extracted supplier candidates.
+  const { data: clientRow } = await db.from('clients').select('gstin').eq('id', clientId).eq('org_id', orgId).single()
+  const buyerGstin = clientRow?.gstin as string | undefined
+
+  // Hash each file once up front — reused for both the job record and extraction/dedup.
+  const fileHashes = await Promise.all(files.map(async f => crypto.createHash('sha256').update(Buffer.from(await f.arrayBuffer())).digest('hex')))
+
   // 1. Insert extraction job rows for each file (processing status).
   // Best-effort: job tracking must never break the upload itself.
   const jobIds: Map<string, string> = new Map()
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
     try {
       const { data: job, error: jobError } = await db.from('extraction_jobs').insert({
         org_id: orgId,
@@ -259,7 +277,7 @@ export async function POST(req: Request) {
         attempt_count: 0,
         last_error: null,
         file_name: file.name,
-        file_hash: crypto.createHash('sha256').update(Buffer.from(await file.arrayBuffer())).digest('hex')
+        file_hash: fileHashes[i],
       }).select('id').single()
       if (jobError) {
         console.error('[extraction_jobs] insert failed:', jobError.message)
@@ -277,7 +295,7 @@ export async function POST(req: Request) {
     const chunk = files.slice(i, i + CONCURRENCY)
 
     // 1. Extract all files in chunk concurrently — allSettled isolates per-file failures
-    const settled = await Promise.allSettled(chunk.map(extractFile))
+    const settled = await Promise.allSettled(chunk.map(f => extractFile(f, buyerGstin)))
     const extracted: ExtractedFile[] = settled.map((r, i) =>
       r.status === 'fulfilled'
         ? r.value
@@ -311,8 +329,42 @@ export async function POST(req: Request) {
           allResults.push({ filename: e.filename, extraction_id: existing.id, skipped: true })
         }
       } else if (!e.parsed.gstin && !e.parsed.invoice_number) {
-        // Extraction yielded nothing useful — skip rather than pollute with zero rows
-        allResults.push({ filename: e.filename, error: 'extraction failed: no GSTIN or invoice number found' })
+        // Extraction yielded nothing — insert a skeleton row for manual entry in the confirm queue
+        const { data: skeleton, error: skErr } = await db.from('purchase_register_entries').insert({
+          org_id: orgId,
+          client_id: clientId,
+          period,
+          supplier_gstin: null,
+          norm_supplier_gstin: null,
+          inv_no: null,
+          inv_date: null,
+          norm_inv_no: null,
+          taxable_value: 0,
+          cgst: 0,
+          sgst: 0,
+          igst: 0,
+          is_rcm: false,
+          doc_type: 'invoice',
+          extraction_confidence: 0,
+          needs_confirmation: true,
+          source: 'upload',
+          file_hash: e.fileHash,
+        }).select('id').single()
+        if (skErr) {
+          allResults.push({ filename: e.filename, error: skErr.message })
+        } else {
+          const jobId = jobIds.get(e.filename)
+          if (jobId) {
+            await db.from('extraction_jobs').update({
+              status: 'low_confidence',
+              result_entry_id: skeleton!.id,
+              extraction_confidence: 0,
+              attempt_count: 1,
+              last_error: 'no GSTIN or invoice number extracted',
+            }).eq('id', jobId)
+          }
+          allResults.push({ filename: e.filename, extraction_id: skeleton!.id, confidence: 0 })
+        }
       } else {
         toInsert.push(e)
       }

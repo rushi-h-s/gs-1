@@ -2,8 +2,9 @@ import { createClient } from '@/utils/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import Link from 'next/link'
 import BreakReviewCard from './BreakReviewCard'
+import ReconAgent from '@/components/ReconAgent'
 import { explainBreak } from '@/lib/explain-break'
-import { acceptAllMatched } from './actions'
+import { acceptAllMatched, lockPeriod } from './actions'
 
 const BUCKETS: Record<string, { label: string; color: string; bg: string; text: string }> = {
   MATCHED:    { label: 'Matched',     color: '#059669', bg: '#D1FAE5', text: '#065F46' },
@@ -18,10 +19,11 @@ export default async function ReconciliationPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ period?: string; status?: string; break?: string; view?: string }>
+  searchParams: Promise<{ period?: string; status?: string; break?: string; view?: string; unconfirmed?: string }>
 }) {
   const { id } = await params
-  const { period, status: filterStatus, break: breakParam, view } = await searchParams
+  const { period, status: filterStatus, break: breakParam, view, unconfirmed } = await searchParams
+  const unconfirmedSkipped = unconfirmed ? parseInt(unconfirmed, 10) : 0
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   const db = user ? supabase : createAdminClient(
@@ -32,7 +34,7 @@ export default async function ReconciliationPage({
   const { data: clientRow } = await db.from('clients').select('name, gstin').eq('id', id).single()
 
   // Latest run for this client+period
-  let runQuery = db.from('recon_run').select('id, status, created_at, rules_version, totals').eq('client_id', id).order('created_at', { ascending: false }).limit(1)
+  let runQuery = db.from('recon_run').select('id, period, status, created_at, rules_version, totals').eq('client_id', id).order('created_at', { ascending: false }).limit(1)
   if (period) runQuery = runQuery.eq('period', period)
   const { data: runs } = await runQuery
   const latestRun = runs?.[0] ?? null
@@ -44,8 +46,8 @@ export default async function ReconciliationPage({
     pr_entry_id, gstr2b_entry_id,
     taxable_variance, tax_variance, itc_at_risk,
     evidence, user_status, resolution_reason, resolution_note,
-    purchase_register_entries(supplier_gstin, invoice_number, norm_inv_no, taxable_value, cgst, sgst, igst),
-    gstr2b_entries(supplier_gstin, invoice_number, norm_inv_no, taxable_value, cgst, sgst, igst)
+    purchase_register_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst),
+    gstr2b_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst)
   `).eq('client_id', id)
 
   if (latestRun) baseQuery = baseQuery.eq('run_id', latestRun.id)
@@ -72,6 +74,18 @@ export default async function ReconciliationPage({
   const itcAtRisk = latestRun ? (totals.itc_at_risk ?? 0) : results.reduce((s, r) => s + (r.itc_at_risk ?? 0), 0)
   const runTime = latestRun ? new Date(latestRun.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : null
 
+  // GSTR-3B filing deadline: 20th of the month after the period
+  const filingDeadline = period ? (() => {
+    const [y, m] = period.split('-').map(Number)
+    const next = new Date(y, m, 20) // month is 0-indexed, so m = next month's 20th
+    return next.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+  })() : null
+
+  // Is the period already locked?
+  const { data: lockRow } = await db.from('locked_periods')
+    .select('id, locked_at').eq('client_id', id).eq('period', period ?? '').maybeSingle()
+  const isLocked = !!lockRow
+
   // CSV export
   const csvRows = [
     ['Status', 'User Status', 'Supplier GSTIN', 'Invoice No', 'Taxable', 'CGST', 'SGST', 'IGST', 'ITC at Risk', 'Mismatched Fields', 'Resolution'].join(','),
@@ -93,6 +107,18 @@ export default async function ReconciliationPage({
 
   return (
     <div className="max-w-5xl">
+      {unconfirmedSkipped > 0 && (
+        <div className="rounded-xl border px-4 py-3 mb-4 flex items-center justify-between"
+          style={{ background: '#FEF3C7', borderColor: '#FDE68A' }}>
+          <span className="text-sm" style={{ color: '#92400E' }}>
+            {unconfirmedSkipped} invoice{unconfirmedSkipped !== 1 ? 's' : ''} with unconfirmed extraction were excluded — results are incomplete.
+          </span>
+          <Link href={`/clients/${id}/confirm`}
+            className="text-xs font-semibold underline ml-4 shrink-0" style={{ color: '#92400E' }}>
+            Confirm now →
+          </Link>
+        </div>
+      )}
       {/* Back + header */}
       <div className="flex items-start justify-between mb-6">
         <div>
@@ -116,6 +142,12 @@ export default async function ReconciliationPage({
               {period} · {clientRow?.gstin}
               {runTime && ` · run ${runTime}`}
               {latestRun?.rules_version && `, rules ${latestRun.rules_version}`}
+              {filingDeadline && !isLocked && (
+                <span style={{ color: '#D97706' }}> · 3B due {filingDeadline}</span>
+              )}
+              {isLocked && (
+                <span style={{ color: '#059669' }}> · filed {new Date(lockRow!.locked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+              )}
             </p>
           )}
         </div>
@@ -274,14 +306,32 @@ export default async function ReconciliationPage({
         </div>
       )}
 
-      {/* Empty state */}
+      {/* Empty state — all breaks reviewed, prompt to lock/file */}
       {!showFlaggedView && breakQueue.length === 0 && total > 0 && (
-        <div className="rounded-2xl border p-16 text-center" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+        <div className="rounded-2xl border p-12 text-center" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
           <div className="text-4xl mb-3">✓</div>
           <div className="text-sm font-semibold font-display" style={{ color: 'var(--text-1)' }}>All breaks reviewed</div>
-          <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-            {flagged.length > 0 ? `${flagged.length} flagged for client` : 'No items remaining'}
+          <div className="text-xs mt-1 mb-6" style={{ color: 'var(--text-3)' }}>
+            {flagged.length > 0 ? `${flagged.length} flagged for client · ` : ''}
+            {isLocked
+              ? `Period locked — filed ${new Date(lockRow!.locked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
+              : filingDeadline ? `GSTR-3B due ${filingDeadline}` : 'Ready to file'}
           </div>
+          {!isLocked && period && (
+            <form action={async () => { 'use server'; await lockPeriod(id, period) }}>
+              <button type="submit"
+                className="px-5 py-2.5 rounded-lg text-sm font-semibold text-white font-display"
+                style={{ background: '#059669' }}>
+                Mark as Filed & Lock Period
+              </button>
+            </form>
+          )}
+          {isLocked && (
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold font-display"
+              style={{ background: '#D1FAE5', color: '#065F46' }}>
+              <span>Period Locked</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -289,6 +339,13 @@ export default async function ReconciliationPage({
         <div className="rounded-2xl border p-16 text-center" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
           <div className="text-sm font-semibold font-display mb-1" style={{ color: 'var(--text-1)' }}>No reconciliation results</div>
           <div className="text-xs" style={{ color: 'var(--text-3)' }}>Upload invoices and GSTR-2B, then run reconciliation</div>
+        </div>
+      )}
+
+      {/* Recon assistant — grounded in this run's data */}
+      {latestRun && total > 0 && (
+        <div className="mt-5">
+          <ReconAgent clientId={id} period={period ?? latestRun.period} />
         </div>
       )}
     </div>

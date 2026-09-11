@@ -14,12 +14,21 @@ export async function POST(req: Request) {
     .select('id').eq('org_id', orgId).eq('client_id', client_id).eq('period', period).single()
   if (lock) return NextResponse.json({ error: 'Period is locked' }, { status: 409 })
 
+  // Guard: warn if unconfirmed entries exist (they have null GSTIN/inv_no and will never match)
+  const { count: unconfirmedCount } = await db.from('purchase_register_entries')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', orgId).eq('client_id', client_id).eq('period', period)
+    .eq('needs_confirmation', true).is('confirmed_at', null)
+  const unconfirmed = unconfirmedCount ?? 0
+
   const [{ data: prEntries }, { data: twoBEntries }] = await Promise.all([
     db.from('purchase_register_entries')
-      .select('id, norm_supplier_gstin, norm_inv_no, invoice_number, taxable_value, cgst, sgst, igst, extraction_confidence')
-      .eq('org_id', orgId).eq('client_id', client_id).eq('period', period),
+      .select('id, norm_supplier_gstin, norm_inv_no, inv_no, taxable_value, cgst, sgst, igst, extraction_confidence')
+      .eq('org_id', orgId).eq('client_id', client_id).eq('period', period)
+      // Unconfirmed entries have null GSTIN/inv_no and can never match — exclude them (counted above as `unconfirmed`)
+      .or('needs_confirmation.eq.false,needs_confirmation.is.null'),
     db.from('gstr2b_entries')
-      .select('id, norm_supplier_gstin, norm_inv_no, invoice_number, taxable_value, cgst, sgst, igst')
+      .select('id, norm_supplier_gstin, norm_inv_no, inv_no, taxable_value, cgst, sgst, igst')
       .eq('org_id', orgId).eq('client_id', client_id).eq('period', period),
   ])
 
@@ -60,7 +69,7 @@ export async function POST(req: Request) {
   }
 
   // Delete old rows
-  await db.from('match_results').delete().eq('client_id', client_id).eq('period', period)
+  await db.from('match_results').delete().eq('org_id', orgId).eq('client_id', client_id).eq('period', period)
 
   if (results.length) {
     const rows = results.map(r => {
@@ -160,9 +169,10 @@ export async function POST(req: Request) {
       .update({ resolved_at: now })
       .eq('client_id', client_id)
       .in('norm_supplier_gstin', matchedKeys.map(k => k.gstin))
+      .in('norm_inv_no', matchedKeys.map(k => k.inv_no))
   }
 
   const counts = results.reduce((a, r) => ({ ...a, [r.status]: (a[r.status] ?? 0) + 1 }), {} as Record<string, number>)
-  return NextResponse.json({ run_id: run.id, counts, total, status: runStatus, itc_at_risk: itcAtRisk })
+  return NextResponse.json({ run_id: run.id, counts, total, status: runStatus, itc_at_risk: itcAtRisk, unconfirmed_skipped: unconfirmed })
 }
 
