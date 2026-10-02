@@ -1,27 +1,12 @@
-import { createClient } from '@/utils/supabase/server'
-import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { getDbAndOrg } from '@/lib/db'
 import Link from 'next/link'
 
-const DEV_ORG_ID = process.env.DEV_ORG_ID
-
 export default async function DashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const { db, orgId } = await getDbAndOrg()
 
-  const db = user ? supabase : createAdminClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-
-  const orgId = user
-    ? (await supabase.from('org_members').select('org_id').eq('user_id', user.id).single()).data?.org_id
-    : DEV_ORG_ID
-
-  const { data: clients } = await db
-    .from('clients')
-    .select('id, name, gstin')
-    .eq('org_id', orgId)
-    .order('name')
+  const { data: clients } = orgId
+    ? await db.from('clients').select('id, name, gstin').eq('org_id', orgId).order('name')
+    : { data: [] }
 
   return (
     <div className="max-w-3xl">

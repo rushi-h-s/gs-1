@@ -1,7 +1,9 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { createClient } from '@/utils/supabase/client'
 
 const NAV = [
   {
@@ -24,6 +26,10 @@ const NAV = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const [email, setEmail] = useState<string | null>(null)
+  useEffect(() => {
+    createClient().auth.getUser().then(({ data }) => setEmail(data.user?.email ?? null))
+  }, [])
 
   return (
     <div className="min-h-screen flex" style={{ background: 'var(--color-bg)', color: 'var(--color-text)' }}>
@@ -67,11 +73,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* User footer */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', borderTop: '2px solid var(--color-divider)' }}>
           <div style={{ width: 32, height: 32, flex: 'none', background: 'var(--color-accent)', color: 'var(--color-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 13 }}>
-            CA
+            {(email ?? 'CA').slice(0, 2).toUpperCase()}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.2 }}>Practice Owner</div>
-            <div style={{ fontSize: 11, opacity: 0.6 }}>CA Firm</div>
+            <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {email ?? 'Practice Owner'}
+            </div>
+            <form action="/api/auth/signout" method="post">
+              <button type="submit" style={{ fontSize: 11, opacity: 0.7, textDecoration: 'underline', background: 'none', border: 0, padding: 0, cursor: 'pointer' }}>
+                Sign out
+              </button>
+            </form>
           </div>
         </div>
       </aside>

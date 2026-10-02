@@ -25,7 +25,7 @@ DaisyUI (CDN) optional for card chrome.
 
 - Pure function `reconcile(prEntries, twoBEntries): MatchResult[]`.
 - Blocks on `norm_supplier_gstin :: norm_inv_no`, picks candidate with fewest mismatched amount fields.
-- 5 buckets: `MATCHED` (≤5% variance on every amount field), `PROBABLE` (≤20%), `MISMATCH` (>20%), `BOOKS_ONLY` (PR unmatched), `TWOB_ONLY` (2B unmatched).
+- 5 buckets: `MATCHED` (≤₹1 on every amount field), `PROBABLE` (≤₹10), `MISMATCH` (>₹10), `BOOKS_ONLY` (PR unmatched), `TWOB_ONLY` (2B unmatched).
 - Returns buckets only — no variance figure, no evidence, no explanation.
 
 ### Run endpoint

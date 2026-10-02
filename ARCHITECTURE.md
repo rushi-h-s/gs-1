@@ -57,9 +57,9 @@ OCR/typo tolerance.
 
 | Bucket | Meaning |
 |---|---|
-| `MATCHED` | GSTIN + inv no align, all amounts within 5% tolerance |
+| `MATCHED` | GSTIN + inv no align, every amount within ₹1 (rounding) |
 | `PROBABLE` | Fuzzy inv-no match, amounts agree |
-| `MISMATCH` | Keys match, one or more of taxable/CGST/SGST/IGST off by >5% |
+| `MISMATCH` | Keys match, one or more of taxable/CGST/SGST/IGST off by more than ₹10 (₹1–₹10 is `PROBABLE`) |
 | `BOOKS_ONLY` | In purchase register, not in GSTR-2B (supplier hasn't filed) |
 | `TWOB_ONLY` | In GSTR-2B, not in books (unrecorded purchase) |
 

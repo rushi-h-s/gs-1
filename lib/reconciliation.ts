@@ -26,7 +26,10 @@ export interface MatchResult {
   evidence: Record<string, unknown>
 }
 
-const AMOUNT_TOLERANCE = 0.05 // 5%
+// Absolute rupee tolerances per amount field. ITC is claimed to the rupee, so a percentage
+// band (the old 5%) hid real differences: a ₹180 tax gap on a ₹12,330 invoice looked 'matched'.
+const ROUNDING_TOLERANCE = 1 // ₹1: genuine rounding noise -> MATCHED
+const MINOR_TOLERANCE = 10 // ₹10: small enough to accept after a glance -> PROBABLE
 const MAX_INV_NO_EDIT_DISTANCE = 2 // OCR/typo tolerance for the fuzzy fallback pass
 
 function levenshtein(a: string, b: string): number {
@@ -51,14 +54,14 @@ function matchAmounts(pr: Entry, tb: Entry): { status: MatchStatus; mismatched: 
   const fields = ['taxable_value', 'cgst', 'sgst', 'igst'] as const
   const mismatched: string[] = []
 
+  const gap = (f: (typeof fields)[number]) => Math.abs((pr[f] ?? 0) - (tb[f] ?? 0))
   for (const field of fields) {
-    const diff = amountDiff(pr[field], tb[field])
-    if (diff > AMOUNT_TOLERANCE) mismatched.push(field)
+    if (gap(field) > ROUNDING_TOLERANCE) mismatched.push(field)
   }
 
   if (mismatched.length === 0) return { status: 'MATCHED', mismatched: [] }
 
-  const allSmall = fields.every(f => amountDiff(pr[f], tb[f]) <= 0.2)
+  const allSmall = fields.every(f => gap(f) <= MINOR_TOLERANCE)
   return {
     status: allSmall ? 'PROBABLE' : 'MISMATCH',
     mismatched,
@@ -136,13 +139,20 @@ export function reconcile(prEntries: Entry[], twoBEntries: Entry[]): MatchResult
   // Fuzzy fallback: same GSTIN, invoice number differs by a couple of characters
   // (OCR misread or a typo in either source) and the taxable value is in the same ballpark.
   // Exact-key matching above would otherwise split these into a BOOKS_ONLY + TWOB_ONLY pair.
+  // Indexed by GSTIN so this stays ~O(n) instead of PR x 2B (50k x 50k would never finish).
+  const twoBByGstin = new Map<string, Entry[]>()
+  for (const tb of twoBEntries) {
+    if (usedTwoB.has(tb.id)) continue
+    const list = twoBByGstin.get(tb.norm_supplier_gstin)
+    if (list) list.push(tb); else twoBByGstin.set(tb.norm_supplier_gstin, [tb])
+  }
   for (const pr of prEntries) {
     if (usedPR.has(pr.id) || !pr.norm_supplier_gstin || !pr.norm_inv_no) continue
 
     let best: Entry | null = null
     let bestDist = Infinity
-    for (const tb of twoBEntries) {
-      if (usedTwoB.has(tb.id) || tb.norm_supplier_gstin !== pr.norm_supplier_gstin || !tb.norm_inv_no) continue
+    for (const tb of twoBByGstin.get(pr.norm_supplier_gstin) ?? []) {
+      if (usedTwoB.has(tb.id) || !tb.norm_inv_no) continue
       if (amountDiff(pr.taxable_value, tb.taxable_value) > 0.2) continue
       const dist = levenshtein(pr.norm_inv_no, tb.norm_inv_no)
       if (dist <= MAX_INV_NO_EDIT_DISTANCE && dist < bestDist) { best = tb; bestDist = dist }

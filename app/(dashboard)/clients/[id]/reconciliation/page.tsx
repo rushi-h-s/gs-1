@@ -1,5 +1,4 @@
-import { createClient } from '@/utils/supabase/server'
-import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { getDbAndOrg, fetchAll } from '@/lib/db'
 import Link from 'next/link'
 import BreakReviewCard from './BreakReviewCard'
 import ReconAgent from '@/components/ReconAgent'
@@ -24,12 +23,7 @@ export default async function ReconciliationPage({
   const { id } = await params
   const { period, status: filterStatus, break: breakParam, view, unconfirmed } = await searchParams
   const unconfirmedSkipped = unconfirmed ? parseInt(unconfirmed, 10) : 0
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  const db = user ? supabase : createAdminClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
+  const { db } = await getDbAndOrg()
 
   const { data: clientRow } = await db.from('clients').select('name, gstin').eq('id', id).single()
 
@@ -41,20 +35,20 @@ export default async function ReconciliationPage({
   const totals = (latestRun?.totals ?? {}) as Record<string, number>
 
   // All match_results for the run (or client+period fallback)
-  let baseQuery = db.from('match_results').select(`
-    id, status, confidence, mismatched_fields,
-    pr_entry_id, gstr2b_entry_id,
-    taxable_variance, tax_variance, itc_at_risk,
-    evidence, user_status, resolution_reason, resolution_note,
-    purchase_register_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst),
-    gstr2b_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst)
-  `).eq('client_id', id)
-
-  if (latestRun) baseQuery = baseQuery.eq('run_id', latestRun.id)
-  else if (period) baseQuery = baseQuery.eq('period', period)
-
-  const { data: allResults } = await baseQuery.order('itc_at_risk', { ascending: false })
-  const results = allResults ?? []
+  // fetchAll: Supabase caps a select at 1000 rows, which silently truncated big runs.
+  const results = await fetchAll(() => {
+    let q = db.from('match_results').select(`
+      id, status, confidence, mismatched_fields,
+      pr_entry_id, gstr2b_entry_id,
+      taxable_variance, tax_variance, itc_at_risk,
+      evidence, user_status, resolution_reason, resolution_note,
+      purchase_register_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst),
+      gstr2b_entries(supplier_gstin, inv_no, norm_inv_no, inv_date, taxable_value, cgst, sgst, igst)
+    `).eq('client_id', id)
+    if (latestRun) q = q.eq('run_id', latestRun.id)
+    else if (period) q = q.eq('period', period)
+    return q.order('itc_at_risk', { ascending: false }).order('id')
+  })
 
   // Counts across all buckets
   const counts = results.reduce((a, r) => ({ ...a, [r.status]: (a[r.status] ?? 0) + 1 }), {} as Record<string, number>)

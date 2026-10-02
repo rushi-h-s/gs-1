@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test tests/unit/*.test.ts",
+    "test:e2e": "node --test --test-concurrency=1 --test-timeout=300000 tests/e2e/*.test.ts",
+    "check": "tsc --noEmit && eslint lib app proxy.ts tests --quiet && npm test"
   },
   "dependencies": {
     "@google/genai": "^2.20.0",

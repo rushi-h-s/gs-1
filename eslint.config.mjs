@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  // Tests read loosely-typed JSON from the API and DB; `any` there is deliberate.
+  { files: ["tests/**"], rules: { "@typescript-eslint/no-explicit-any": "off" } },
 ]);
 
 export default eslintConfig;

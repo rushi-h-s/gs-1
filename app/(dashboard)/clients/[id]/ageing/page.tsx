@@ -1,5 +1,4 @@
-import { createClient } from '@/utils/supabase/server'
-import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { getDbAndOrg } from '@/lib/db'
 import Link from 'next/link'
 
 function bucketOf(periodsOpen: number): '1 month' | '2–3 months' | '3+ months' {
@@ -14,12 +13,7 @@ export default async function AgeingPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  const db = user ? supabase : createAdminClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
+  const { db } = await getDbAndOrg()
 
   const { data: clientRow } = await db.from('clients').select('name, gstin').eq('id', id).single()
 
