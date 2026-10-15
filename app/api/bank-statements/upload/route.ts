@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getDbAndOrg } from '@/lib/db'
 import { extractBankStatement } from '@/lib/bank-extractor'
+import { checkFiles, rateLimit } from '@/lib/limits'
 import crypto from 'crypto'
+
+export const maxDuration = 60
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
@@ -18,8 +21,14 @@ export async function POST(req: Request) {
   const { db, orgId } = await getDbAndOrg()
   if (!orgId) return NextResponse.json({ error: 'No org' }, { status: 403 })
 
+  if (!rateLimit(`bank-upload:${orgId}`, 30)) {
+    return NextResponse.json({ error: 'Too many uploads, retry in a minute' }, { status: 429 })
+  }
+
   const formData = await req.formData()
-  const files    = formData.getAll('files') as File[]
+  const files    = formData.getAll('files').filter((f): f is File => f instanceof File)
+  const fileErr  = await checkFiles(files, ['pdf', 'csv'])
+  if (fileErr) return NextResponse.json({ error: fileErr }, { status: 400 })
   const clientId = formData.get('client_id') as string
   const period   = formData.get('period') as string
 

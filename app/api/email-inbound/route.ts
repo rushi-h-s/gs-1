@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
 import { adminClient } from '@/lib/db'
+import { safeEqual, MAX_FILE_BYTES } from '@/lib/limits'
 
 export async function POST(req: Request) {
   // Webhook has no user session, so it must prove itself with a shared secret.
   const secret = process.env.EMAIL_INBOUND_SECRET
   if (!secret) return NextResponse.json({ error: 'Inbound email not configured (set EMAIL_INBOUND_SECRET)' }, { status: 503 })
-  if (req.headers.get('x-webhook-secret') !== secret) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!safeEqual(req.headers.get('x-webhook-secret') ?? '', secret)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const payload = await req.json().catch(() => null)
   if (!payload) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
@@ -17,6 +18,10 @@ export async function POST(req: Request) {
   const attachments = (payload.attachments ?? []) as Array<{ filename: string; content: string }>
 
   if (!attachments.length) return NextResponse.json({ ok: true, skipped: 'no attachments' })
+  // base64 is ~4/3 of the raw size, so this caps each attachment near MAX_FILE_BYTES
+  if (attachments.length > 10 || attachments.some(a => typeof a.content !== 'string' || a.content.length > MAX_FILE_BYTES * 4 / 3)) {
+    return NextResponse.json({ error: 'Too many or oversized attachments' }, { status: 413 })
+  }
 
   // Lookup routing rule by sender email
   const { data: routing } = await supabase

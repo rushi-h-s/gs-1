@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getDbAndOrg } from '@/lib/db'
 import { normalizeGstin, normalizeInvNo, validateGstin } from '@/lib/normalize'
+import { checkFiles, rateLimit, MAX_JSON_INVOICES } from '@/lib/limits'
 import crypto from 'crypto'
+
+const LLM_TIMEOUT_MS = 30_000
+export const maxDuration = 60
 
 const MONTH_MAP: Record<string, string> = {
   jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
@@ -117,8 +121,9 @@ async function callOpenAICompat(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model, messages: [{ role: 'user', content }], max_tokens: 512 }),
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
   })
-  if (!res.ok) throw new Error(`${baseUrl} ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`${baseUrl} ${res.status}`)  // body omitted: may echo invoice data
   const data = await res.json() as { choices?: { message?: { content?: string } }[] }
   return data.choices?.[0]?.message?.content ?? ''
 }
@@ -126,7 +131,7 @@ async function callOpenAICompat(
 function parseJsonResult(raw: string, buyerGstin?: string): ExtractionResult {
   try {
     const json = JSON.parse(raw.replace(/```json|```/g, '').trim()) as Record<string, unknown>
-    const gstin = json.gstin ? String(json.gstin) : undefined
+    const gstin = (json.gstin ?? json.supplier_gstin) ? String(json.gstin ?? json.supplier_gstin) : undefined
     return {
       // Guard against the model still returning the buyer's own GSTIN
       gstin: gstin && gstin !== buyerGstin ? gstin : undefined,
@@ -152,7 +157,6 @@ async function extractWithAI(prompt: string, buyerGstin?: string, imageBase64?: 
   if (orKey) {
     try {
       const raw = await callOpenAICompat('https://openrouter.ai/api/v1', orKey, orModel, prompt, imageBase64, imageMime)
-      console.log('[openrouter] raw:', raw?.slice(0, 300))
       const result = parseJsonResult(raw, buyerGstin)
       if (result.gstin || result.invoice_number) return result
     } catch (e) { console.error('[openrouter] error:', e) }
@@ -181,6 +185,7 @@ async function extractWithAI(prompt: string, buyerGstin?: string, imageBase64?: 
           { text: prompt },
           { inlineData: { mimeType: imageMime, data: imageBase64 } },
         ]}],
+        config: { abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS) },
       })
       return parseJsonResult(result.text ?? '', buyerGstin)
     } catch (e) { console.error('[gemini] error:', e) }
@@ -231,6 +236,9 @@ async function extractFile(file: File, buyerGstin?: string): Promise<ExtractedFi
         // Scanned/bad PDF: vision model
         parsed = await extractWithAI(prompt, buyerGstin, buffer.toString('base64'), 'application/pdf')
       }
+    } else if (file.name.toLowerCase().endsWith('.json')) {
+      // already structured — one invoice per file (see expandJsonFiles)
+      parsed = parseJsonResult(buffer.toString('utf-8'), buyerGstin)
     } else if (isImage(file.name)) {
       const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpeg'
       const mime = ext === 'png' ? 'image/png' : ext === 'tiff' ? 'image/tiff' : 'image/jpeg'
@@ -243,12 +251,39 @@ async function extractFile(file: File, buyerGstin?: string): Promise<ExtractedFi
   return { filename: file.name, fileHash, parsed }
 }
 
+// A .json upload may hold many invoices (array, or {purchase_register|invoices: [...]}).
+// Split each into its own one-invoice File so the one-file-one-entry pipeline (hash, dedup) works unchanged.
+async function expandJsonFiles(files: File[]): Promise<File[]> {
+  const out: File[] = []
+  for (const f of files) {
+    if (!f.name.toLowerCase().endsWith('.json')) { out.push(f); continue }
+    let rows: unknown[]
+    try {
+      const j = JSON.parse(await f.text())
+      rows = Array.isArray(j) ? j : (j.purchase_register ?? j.invoices ?? [j])
+    } catch { out.push(f); continue }  // bad JSON → extraction yields nothing → manual-entry skeleton
+    rows.forEach((r, i) => out.push(new File([JSON.stringify(r)], `${f.name.replace(/\.json$/i, '')}-${i + 1}.json`)))
+  }
+  return out
+}
+
 export async function POST(req: Request) {
   const { db, orgId } = await getDbAndOrg()
   if (!orgId) return NextResponse.json({ error: 'No org' }, { status: 403 })
 
+  // One request ≈ one file (client sends 5 at a time), so this allows a large batch but stops runaway LLM spend.
+  if (!rateLimit(`invoice-upload:${orgId}`, 120)) {
+    return NextResponse.json({ error: 'Too many uploads, retry in a minute' }, { status: 429 })
+  }
+
   const formData = await req.formData()
-  const files = formData.getAll('files') as File[]
+  const rawFiles = formData.getAll('files').filter((f): f is File => f instanceof File)
+  const fileErr = await checkFiles(rawFiles, ['pdf', 'jpg', 'jpeg', 'png', 'tiff', 'json'])
+  if (fileErr) return NextResponse.json({ error: fileErr }, { status: 400 })
+  const files = await expandJsonFiles(rawFiles)
+  if (files.length > MAX_JSON_INVOICES) {
+    return NextResponse.json({ error: `Too many invoices (max ${MAX_JSON_INVOICES})` }, { status: 400 })
+  }
   const clientId = formData.get('client_id') as string
   const period = formData.get('period') as string
 

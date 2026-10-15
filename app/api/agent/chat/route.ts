@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { getDbAndOrg } from '@/lib/db'
 import { agentTools } from '@/lib/agent-tools'
 import { runTool } from '@/lib/tool-runner'
+import { rateLimit } from '@/lib/limits'
+
+export const maxDuration = 90  // two sequential 30s provider calls + tool run
 
 // OpenAI-compatible endpoint. Defaults to Nebius Token Factory (Nemotron),
 // but any OpenAI-compatible provider works via env overrides.
@@ -19,8 +22,9 @@ async function callAgent(messages: object[], tools?: object[]) {
     method: 'POST',
     headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   })
-  if (!res.ok) throw new Error(`agent provider ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`agent provider ${res.status}`)
   return res.json() as Promise<{
     choices: { finish_reason: string; message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[]
   }>
@@ -31,9 +35,16 @@ export async function POST(req: Request) {
   if (!orgId) return NextResponse.json({ error: 'No org' }, { status: 403 })
   if (!API_KEY) return NextResponse.json({ error: 'Agent provider not configured (set AGENT_API_KEY or NEBIUS_API_KEY)' }, { status: 503 })
 
-  const { messages, client_id, period } = await req.json()
-  if (!messages || !client_id || !period) {
+  if (!rateLimit(`agent:${orgId}`, 20)) {
+    return NextResponse.json({ error: 'Too many requests, retry in a minute' }, { status: 429 })
+  }
+
+  const { messages, client_id, period } = await req.json().catch(() => ({}))
+  if (!Array.isArray(messages) || !client_id || !period) {
     return NextResponse.json({ error: 'messages, client_id, period required' }, { status: 400 })
+  }
+  if (messages.length > 30 || JSON.stringify(messages).length > 50_000) {
+    return NextResponse.json({ error: 'Conversation too long' }, { status: 413 })
   }
 
   const system = `You are a GST reconciliation assistant for a CA firm.
@@ -68,6 +79,7 @@ When drafting vendor emails, be firm but polite.`
     ])
     return NextResponse.json({ reply: r2.choices[0].message.content })
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 502 })
+    console.error('[agent] failed:', (e as Error).message)
+    return NextResponse.json({ error: 'Assistant unavailable, try again' }, { status: 502 })
   }
 }
