@@ -237,7 +237,7 @@ export default function ClientDetailPage() {
 
           <label className="block w-full border-2 border-dashed rounded-lg px-3 py-3 text-center cursor-pointer text-xs transition-colors mb-3 hover:border-green-300"
             style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff" multiple onChange={e => setInvoiceFiles(e.target.files)} className="hidden" />
+            <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.json" multiple onChange={e => setInvoiceFiles(e.target.files)} className="hidden" />
             {invoiceFiles?.length ? (
               <span style={{ color: 'var(--text-1)' }} className="font-medium">{invoiceFiles.length} file{invoiceFiles.length !== 1 ? 's' : ''} selected</span>
             ) : (
